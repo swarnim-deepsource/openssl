@@ -83,16 +83,8 @@ size_t ppc_aes_gcm_encrypt(const unsigned char *in, unsigned char *out,
 size_t ppc_aes_gcm_decrypt(const unsigned char *in, unsigned char *out,
                            size_t len, const void *key, unsigned char ivec[16],
                            u64 *Xi);
-size_t ppc_aes_gcm_encrypt_wrap(const unsigned char *in, unsigned char *out,
-                                size_t len, const void *key,
-                                unsigned char ivec[16], u64 *Xi);
-size_t ppc_aes_gcm_decrypt_wrap(const unsigned char *in, unsigned char *out,
-                                size_t len, const void *key,
-                                unsigned char ivec[16], u64 *Xi);
-#   define AES_gcm_encrypt ppc_aes_gcm_encrypt_wrap
-#   define AES_gcm_decrypt ppc_aes_gcm_decrypt_wrap
-#   define AES_GCM_ASM(gctx) ((gctx)->ctr==aes_p8_ctr32_encrypt_blocks && \
-                              (gctx)->gcm.funcs.ghash==gcm_ghash_p8)
+#   define AES_GCM_ASM_PPC(gctx) ((gctx)->ctr==aes_p8_ctr32_encrypt_blocks && \
+                                 (gctx)->gcm.funcs.ghash==gcm_ghash_p8)
 void gcm_ghash_p8(u64 Xi[2],const u128 Htable[16],const u8 *inp, size_t len);
 #  endif /* PPC */
 
@@ -164,6 +156,13 @@ void gcm_ghash_v8(u64 Xi[2],const u128 Htable[16],const u8 *inp, size_t len);
          defined(_M_AMD64)       || defined(_M_X64)      )
 #  define AES_CBC_HMAC_SHA_CAPABLE 1
 #  define AESNI_CBC_HMAC_SHA_CAPABLE (OPENSSL_ia32cap_P[1]&(1<<(57-32)))
+# endif
+
+# if defined(__loongarch__) || defined(__loongarch64)
+#  include "loongarch_arch.h"
+#  if defined(VPAES_ASM)
+#   define VPAES_CAPABLE  (OPENSSL_loongarchcap_P & LOONGARCH_CFG2_LSX)
+#  endif
 # endif
 
 # if     defined(AES_ASM) && !defined(I386_ONLY) &&      (  \

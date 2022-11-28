@@ -59,16 +59,14 @@ typedef struct ossl_record_layer_st OSSL_RECORD_LAYER;
 
 /*
  * Template for creating a record. A record consists of the |type| of data it
- * will contain (e.g. alert, handshake, application data, etc) along with an
- * array of buffers in |bufs| of size |numbufs|. There is a corresponding array
- * of buffer lengths in |buflens|. Concatenating all of the buffer data together
- * would give you the complete plaintext payload to be sent in a single record.
+ * will contain (e.g. alert, handshake, application data, etc) along with a
+ * buffer of payload data in |buf| of length |buflen|.
  */
 struct ossl_record_template_st {
     int type;
-    void **bufs;
-    size_t *buflens;
-    size_t numbufs;
+    unsigned int version;
+    const unsigned char *buf;
+    size_t buflen;
 };
 
 typedef struct ossl_record_template_st OSSL_RECORD_TEMPLATE;
@@ -136,7 +134,7 @@ struct ossl_record_method_st {
                             size_t taglen,
                             int mactype,
                             const EVP_MD *md,
-                            const SSL_COMP *comp,
+                            COMP_METHOD *comp,
                             BIO *prev,
                             BIO *transport,
                             BIO *next,
@@ -166,34 +164,27 @@ struct ossl_record_method_st {
      */
     size_t (*app_data_pending)(OSSL_RECORD_LAYER *rl);
 
-    int (*write_pending)(OSSL_RECORD_LAYER *rl);
-
-    /*
-     * Find out the maximum amount of plaintext data that the record layer is
-     * prepared to write in a single record. When calling write_records it is
-     * the caller's responsibility to ensure that no record template exceeds
-     * this maximum when calling write_records.
-     */
-    size_t (*get_max_record_len)(OSSL_RECORD_LAYER *rl);
-
     /*
      * Find out the maximum number of records that the record layer is prepared
      * to process in a single call to write_records. It is the caller's
      * responsibility to ensure that no call to write_records exceeds this
-     * number of records.
+     * number of records. |type| is the type of the records that the caller
+     * wants to write, and |len| is the total amount of data that it wants
+     * to send. |maxfrag| is the maximum allowed fragment size based on user
+     * configuration, or TLS parameter negotiation. |*preffrag| contains on
+     * entry the default fragment size that will actually be used based on user
+     * configuration. This will always be less than or equal to |maxfrag|. On
+     * exit the record layer may update this to an alternative fragment size to
+     * be used. This must always be less than or equal to |maxfrag|.
      */
-    size_t (*get_max_records)(OSSL_RECORD_LAYER *rl);
+    size_t (*get_max_records)(OSSL_RECORD_LAYER *rl, int type, size_t len,
+                              size_t maxfrag, size_t *preffrag);
 
     /*
      * Write |numtempl| records from the array of record templates pointed to
      * by |templates|. Each record should be no longer than the value returned
      * by get_max_record_len(), and there should be no more records than the
      * value returned by get_max_records().
-     * |allowance| is the maximum amount of "on-the-wire" data that is allowed
-     * to be sent at the moment (including all QUIC headers, but excluding any
-     * UDP/IP headers). After a successful or retry return |*sent| will
-     * be updated with the amount of data that has been sent so far. In the case
-     * of a retry this could be 0.
      * Where possible the caller will attempt to ensure that all records are the
      * same length, except the last record. This may not always be possible so
      * the record method implementation should not rely on this being the case.
@@ -209,24 +200,19 @@ struct ossl_record_method_st {
      *  0 on retry
      * -1 on failure
      */
-    int (*write_records)(OSSL_RECORD_LAYER *rl, OSSL_RECORD_TEMPLATE **templates,
-                         size_t numtempl, size_t allowance, size_t *sent);
+    int (*write_records)(OSSL_RECORD_LAYER *rl, OSSL_RECORD_TEMPLATE *templates,
+                         size_t numtempl);
 
     /*
      * Retry a previous call to write_records. The caller should continue to
      * call this until the function returns with success or failure. After
-     * each retry more of the data may have been incrementally sent. |allowance|
-     * is the amount of "on-the-wire" data that is allowed to be sent at the
-     * moment. After a successful or retry return |*sent| will
-     * be updated with the amount of data that has been sent by this call to
-     * retry_write_records().
+     * each retry more of the data may have been incrementally sent.
      * Returns:
      *  1 on success
      *  0 on retry
      * -1 on failure
      */
-    int (*retry_write_records)(OSSL_RECORD_LAYER *rl, size_t allowance,
-                               size_t *sent);
+    int (*retry_write_records)(OSSL_RECORD_LAYER *rl);
 
     /*
      * Read a record and return the record layer version and record type in
@@ -304,6 +290,38 @@ struct ossl_record_method_st {
      * new_record_layer call.
      */
     int (*set_options)(OSSL_RECORD_LAYER *rl, const OSSL_PARAM *options);
+
+    const COMP_METHOD *(*get_compression)(OSSL_RECORD_LAYER *rl);
+
+    /*
+     * Set the maximum fragment length to be used for the record layer. This
+     * will override any previous value supplied for the "max_frag_len"
+     * setting during construction of the record layer.
+     */
+    void (*set_max_frag_len)(OSSL_RECORD_LAYER *rl, size_t max_frag_len);
+
+    /*
+     * The maximum expansion in bytes that the record layer might add while
+     * writing a record
+     */
+    size_t (*get_max_record_overhead)(OSSL_RECORD_LAYER *rl);
+
+    /*
+     * Increment the record sequence number
+     */
+    int (*increment_sequence_ctr)(OSSL_RECORD_LAYER *rl);
+
+    /*
+     * Allocate read or write buffers. Does nothing if already allocated.
+     * Assumes default buffer length and 1 pipeline.
+     */
+    int (*alloc_buffers)(OSSL_RECORD_LAYER *rl);
+
+    /*
+     * Free read or write buffers. Fails if there is pending read or write
+     * data. Buffers are automatically reallocated on next read/write.
+     */
+    int (*free_buffers)(OSSL_RECORD_LAYER *rl);
 };
 
 

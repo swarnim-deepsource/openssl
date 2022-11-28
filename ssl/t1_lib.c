@@ -30,8 +30,6 @@ static const SIGALG_LOOKUP *find_sig_alg(SSL_CONNECTION *s, X509 *x, EVP_PKEY *p
 static int tls12_sigalg_allowed(const SSL_CONNECTION *s, int op, const SIGALG_LOOKUP *lu);
 
 SSL3_ENC_METHOD const TLSv1_enc_data = {
-    tls1_enc,
-    tls1_mac_old,
     tls1_setup_key_block,
     tls1_generate_master_secret,
     tls1_change_cipher_state,
@@ -47,8 +45,6 @@ SSL3_ENC_METHOD const TLSv1_enc_data = {
 };
 
 SSL3_ENC_METHOD const TLSv1_1_enc_data = {
-    tls1_enc,
-    tls1_mac_old,
     tls1_setup_key_block,
     tls1_generate_master_secret,
     tls1_change_cipher_state,
@@ -64,8 +60,6 @@ SSL3_ENC_METHOD const TLSv1_1_enc_data = {
 };
 
 SSL3_ENC_METHOD const TLSv1_2_enc_data = {
-    tls1_enc,
-    tls1_mac_old,
     tls1_setup_key_block,
     tls1_generate_master_secret,
     tls1_change_cipher_state,
@@ -82,8 +76,6 @@ SSL3_ENC_METHOD const TLSv1_2_enc_data = {
 };
 
 SSL3_ENC_METHOD const TLSv1_3_enc_data = {
-    tls13_enc,
-    tls1_mac_old,
     tls13_setup_key_block,
     tls13_generate_master_secret,
     tls13_change_cipher_state,
@@ -181,6 +173,9 @@ static struct {
     {NID_brainpoolP512r1, OSSL_TLS_GROUP_ID_brainpoolP512r1},
     {EVP_PKEY_X25519, OSSL_TLS_GROUP_ID_x25519},
     {EVP_PKEY_X448, OSSL_TLS_GROUP_ID_x448},
+    {NID_brainpoolP256r1tls13, OSSL_TLS_GROUP_ID_brainpoolP256r1_tls13},
+    {NID_brainpoolP384r1tls13, OSSL_TLS_GROUP_ID_brainpoolP384r1_tls13},
+    {NID_brainpoolP512r1tls13, OSSL_TLS_GROUP_ID_brainpoolP512r1_tls13},
     {NID_id_tc26_gost_3410_2012_256_paramSetA, OSSL_TLS_GROUP_ID_gc256A},
     {NID_id_tc26_gost_3410_2012_256_paramSetB, OSSL_TLS_GROUP_ID_gc256B},
     {NID_id_tc26_gost_3410_2012_256_paramSetC, OSSL_TLS_GROUP_ID_gc256C},
@@ -257,10 +252,8 @@ static int add_provider_groups(const OSSL_PARAM params[], void *data)
                                   (ctx->group_list_max_len
                                    + TLS_GROUP_LIST_MALLOC_BLOCK_SIZE)
                                   * sizeof(TLS_GROUP_INFO));
-        if (tmp == NULL) {
-            ERR_raise(ERR_LIB_SSL, ERR_R_MALLOC_FAILURE);
+        if (tmp == NULL)
             return 0;
-        }
         ctx->group_list = tmp;
         memset(tmp + ctx->group_list_max_len,
                0,
@@ -276,10 +269,8 @@ static int add_provider_groups(const OSSL_PARAM params[], void *data)
         goto err;
     }
     ginf->tlsname = OPENSSL_strdup(p->data);
-    if (ginf->tlsname == NULL) {
-        ERR_raise(ERR_LIB_SSL, ERR_R_MALLOC_FAILURE);
+    if (ginf->tlsname == NULL)
         goto err;
-    }
 
     p = OSSL_PARAM_locate_const(params, OSSL_CAPABILITY_TLS_GROUP_NAME_INTERNAL);
     if (p == NULL || p->data_type != OSSL_PARAM_UTF8_STRING) {
@@ -287,10 +278,8 @@ static int add_provider_groups(const OSSL_PARAM params[], void *data)
         goto err;
     }
     ginf->realname = OPENSSL_strdup(p->data);
-    if (ginf->realname == NULL) {
-        ERR_raise(ERR_LIB_SSL, ERR_R_MALLOC_FAILURE);
+    if (ginf->realname == NULL)
         goto err;
-    }
 
     p = OSSL_PARAM_locate_const(params, OSSL_CAPABILITY_TLS_GROUP_ID);
     if (p == NULL || !OSSL_PARAM_get_uint(p, &gid) || gid > UINT16_MAX) {
@@ -305,10 +294,8 @@ static int add_provider_groups(const OSSL_PARAM params[], void *data)
         goto err;
     }
     ginf->algorithm = OPENSSL_strdup(p->data);
-    if (ginf->algorithm == NULL) {
-        ERR_raise(ERR_LIB_SSL, ERR_R_MALLOC_FAILURE);
+    if (ginf->algorithm == NULL)
         goto err;
-    }
 
     p = OSSL_PARAM_locate_const(params, OSSL_CAPABILITY_TLS_GROUP_SECURITY_BITS);
     if (p == NULL || !OSSL_PARAM_get_uint(p, &ginf->secbits)) {
@@ -419,10 +406,8 @@ int ssl_load_groups(SSL_CTX *ctx)
     ctx->ext.supported_groups_default
         = OPENSSL_malloc(sizeof(uint16_t) * num_deflt_grps);
 
-    if (ctx->ext.supported_groups_default == NULL) {
-        ERR_raise(ERR_LIB_SSL, ERR_R_MALLOC_FAILURE);
+    if (ctx->ext.supported_groups_default == NULL)
         return 0;
-    }
 
     memcpy(ctx->ext.supported_groups_default,
            tmp_supp_groups,
@@ -443,42 +428,6 @@ static uint16_t tls1_group_name2id(SSL_CTX *ctx, const char *name)
     }
 
     return 0;
-}
-
-uint16_t ssl_group_id_internal_to_tls13(uint16_t curve_id)
-{
-    switch(curve_id) {
-    case OSSL_TLS_GROUP_ID_brainpoolP256r1:
-        return OSSL_TLS_GROUP_ID_brainpoolP256r1_tls13;
-    case OSSL_TLS_GROUP_ID_brainpoolP384r1:
-        return OSSL_TLS_GROUP_ID_brainpoolP384r1_tls13;
-    case OSSL_TLS_GROUP_ID_brainpoolP512r1:
-        return OSSL_TLS_GROUP_ID_brainpoolP512r1_tls13;
-    case OSSL_TLS_GROUP_ID_brainpoolP256r1_tls13:
-    case OSSL_TLS_GROUP_ID_brainpoolP384r1_tls13:
-    case OSSL_TLS_GROUP_ID_brainpoolP512r1_tls13:
-        return 0;
-    default:
-        return curve_id;
-    }
-}
-
-uint16_t ssl_group_id_tls13_to_internal(uint16_t curve_id)
-{
-    switch(curve_id) {
-    case OSSL_TLS_GROUP_ID_brainpoolP256r1:
-    case OSSL_TLS_GROUP_ID_brainpoolP384r1:
-    case OSSL_TLS_GROUP_ID_brainpoolP512r1:
-        return 0;
-    case OSSL_TLS_GROUP_ID_brainpoolP256r1_tls13:
-        return OSSL_TLS_GROUP_ID_brainpoolP256r1;
-    case OSSL_TLS_GROUP_ID_brainpoolP384r1_tls13:
-        return OSSL_TLS_GROUP_ID_brainpoolP384r1;
-    case OSSL_TLS_GROUP_ID_brainpoolP512r1_tls13:
-        return OSSL_TLS_GROUP_ID_brainpoolP512r1;
-    default:
-        return curve_id;
-    }
 }
 
 const TLS_GROUP_INFO *tls1_group_id_lookup(SSL_CTX *ctx, uint16_t group_id)
@@ -687,15 +636,8 @@ uint16_t tls1_shared_group(SSL_CONNECTION *s, int nmatch)
 
     for (k = 0, i = 0; i < num_pref; i++) {
         uint16_t id = pref[i];
-        uint16_t cid = id;
 
-        if (SSL_CONNECTION_IS_TLS13(s)) {
-            if (s->options & SSL_OP_CIPHER_SERVER_PREFERENCE)
-                cid = ssl_group_id_internal_to_tls13(id);
-            else
-                cid = id = ssl_group_id_tls13_to_internal(id);
-        }
-        if (!tls1_in_list(cid, supp, num_supp)
+        if (!tls1_in_list(id, supp, num_supp)
                 || !tls_group_allowed(s, id, SSL_SECOP_CURVE_SHARED))
             continue;
         if (nmatch == k)
@@ -725,10 +667,8 @@ int tls1_set_groups(uint16_t **pext, size_t *pextlen,
         ERR_raise(ERR_LIB_SSL, SSL_R_BAD_LENGTH);
         return 0;
     }
-    if ((glist = OPENSSL_malloc(ngroups * sizeof(*glist))) == NULL) {
-        ERR_raise(ERR_LIB_SSL, ERR_R_MALLOC_FAILURE);
+    if ((glist = OPENSSL_malloc(ngroups * sizeof(*glist))) == NULL)
         return 0;
-    }
     for (i = 0; i < ngroups; i++) {
         unsigned long idmask;
         uint16_t id;
@@ -2335,10 +2275,8 @@ static int tls1_set_shared_sigalgs(SSL_CONNECTION *s)
     }
     nmatch = tls12_shared_sigalgs(s, NULL, pref, preflen, allow, allowlen);
     if (nmatch) {
-        if ((salgs = OPENSSL_malloc(nmatch * sizeof(*salgs))) == NULL) {
-            ERR_raise(ERR_LIB_SSL, ERR_R_MALLOC_FAILURE);
+        if ((salgs = OPENSSL_malloc(nmatch * sizeof(*salgs))) == NULL)
             return 0;
-        }
         nmatch = tls12_shared_sigalgs(s, salgs, pref, preflen, allow, allowlen);
     } else {
         salgs = NULL;
@@ -2362,10 +2300,8 @@ int tls1_save_u16(PACKET *pkt, uint16_t **pdest, size_t *pdestlen)
 
     size >>= 1;
 
-    if ((buf = OPENSSL_malloc(size * sizeof(*buf))) == NULL)  {
-        ERR_raise(ERR_LIB_SSL, ERR_R_MALLOC_FAILURE);
+    if ((buf = OPENSSL_malloc(size * sizeof(*buf))) == NULL)
         return 0;
-    }
     for (i = 0; i < size && PACKET_get_net_2(pkt, &stmp); i++)
         buf[i] = stmp;
 
@@ -2606,10 +2542,8 @@ int tls1_set_raw_sigalgs(CERT *c, const uint16_t *psigs, size_t salglen,
 {
     uint16_t *sigalgs;
 
-    if ((sigalgs = OPENSSL_malloc(salglen * sizeof(*sigalgs))) == NULL) {
-        ERR_raise(ERR_LIB_SSL, ERR_R_MALLOC_FAILURE);
+    if ((sigalgs = OPENSSL_malloc(salglen * sizeof(*sigalgs))) == NULL)
         return 0;
-    }
     memcpy(sigalgs, psigs, salglen * sizeof(*sigalgs));
 
     if (client) {
@@ -2632,10 +2566,8 @@ int tls1_set_sigalgs(CERT *c, const int *psig_nids, size_t salglen, int client)
 
     if (salglen & 1)
         return 0;
-    if ((sigalgs = OPENSSL_malloc((salglen / 2) * sizeof(*sigalgs))) == NULL) {
-        ERR_raise(ERR_LIB_SSL, ERR_R_MALLOC_FAILURE);
+    if ((sigalgs = OPENSSL_malloc((salglen / 2) * sizeof(*sigalgs))) == NULL)
         return 0;
-    }
     for (i = 0, sptr = sigalgs; i < salglen; i += 2) {
         size_t j;
         const SIGALG_LOOKUP *curr;

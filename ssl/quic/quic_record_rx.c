@@ -10,6 +10,7 @@
 #include "internal/quic_record_rx.h"
 #include "quic_record_shared.h"
 #include "internal/common.h"
+#include "internal/list.h"
 #include "../ssl_local.h"
 
 /*
@@ -40,7 +41,7 @@ static ossl_inline int pkt_is_marked(const uint64_t *bitf, size_t pkt_idx)
 typedef struct rxe_st RXE;
 
 struct rxe_st {
-    RXE                *prev, *next;
+    OSSL_LIST_MEMBER(rxe, RXE);
     size_t              data_len, alloc_len;
 
     /* Extra fields for per-packet information. */
@@ -64,42 +65,12 @@ struct rxe_st {
      */
 };
 
-typedef struct ossl_qrx_rxe_list_st {
-    RXE *head, *tail;
-} RXE_LIST;
+DEFINE_LIST_OF(rxe, RXE);
+typedef OSSL_LIST(rxe) RXE_LIST;
 
 static ossl_inline unsigned char *rxe_data(const RXE *e)
 {
     return (unsigned char *)(e + 1);
-}
-
-static void rxe_remove(RXE_LIST *l, RXE *e)
-{
-    if (e->prev != NULL)
-        e->prev->next = e->next;
-    if (e->next != NULL)
-        e->next->prev = e->prev;
-
-    if (e == l->head)
-        l->head = e->next;
-    if (e == l->tail)
-        l->tail = e->prev;
-
-    e->next = e->prev = NULL;
-}
-
-static void rxe_insert_tail(RXE_LIST *l, RXE *e)
-{
-    if (l->tail == NULL) {
-        l->head = l->tail = e;
-        e->next = e->prev = NULL;
-        return;
-    }
-
-    l->tail->next = e;
-    e->prev = l->tail;
-    e->next = NULL;
-    l->tail = e;
 }
 
 /*
@@ -115,6 +86,12 @@ struct ossl_qrx_st {
 
     /* Length of connection IDs used in short-header packets in bytes. */
     size_t                      short_conn_id_len;
+
+    /* Maximum number of deferred datagrams buffered at any one time. */
+    size_t                      max_deferred;
+
+    /* Current count of deferred datagrams. */
+    size_t                      num_deferred;
 
     /*
      * List of URXEs which are filled with received encrypted data.
@@ -176,7 +153,7 @@ OSSL_QRX *ossl_qrx_new(const OSSL_QRX_ARGS *args)
     OSSL_QRX *qrx;
     size_t i;
 
-    if (args->demux == NULL)
+    if (args->demux == NULL || args->max_deferred == 0)
         return 0;
 
     qrx = OPENSSL_zalloc(sizeof(OSSL_QRX));
@@ -191,6 +168,7 @@ OSSL_QRX *ossl_qrx_new(const OSSL_QRX_ARGS *args)
     qrx->demux                  = args->demux;
     qrx->short_conn_id_len      = args->short_conn_id_len;
     qrx->init_key_phase_bit     = args->init_key_phase_bit;
+    qrx->max_deferred           = args->max_deferred;
     return qrx;
 }
 
@@ -198,29 +176,29 @@ static void qrx_cleanup_rxl(RXE_LIST *l)
 {
     RXE *e, *enext;
 
-    for (e = l->head; e != NULL; e = enext) {
-        enext = e->next;
+    for (e = ossl_list_rxe_head(l); e != NULL; e = enext) {
+        enext = ossl_list_rxe_next(e);
+        ossl_list_rxe_remove(l, e);
         OPENSSL_free(e);
     }
-
-    l->head = l->tail = NULL;
 }
 
 static void qrx_cleanup_urxl(OSSL_QRX *qrx, QUIC_URXE_LIST *l)
 {
     QUIC_URXE *e, *enext;
 
-    for (e = l->head; e != NULL; e = enext) {
-        enext = e->next;
+    for (e = ossl_list_urxe_head(l); e != NULL; e = enext) {
+        enext = ossl_list_urxe_next(e);
         ossl_quic_demux_release_urxe(qrx->demux, e);
     }
-
-    l->head = l->tail = NULL;
 }
 
 void ossl_qrx_free(OSSL_QRX *qrx)
 {
     uint32_t i;
+
+    if (qrx == NULL)
+        return;
 
     /* Unregister from the RX DEMUX. */
     ossl_quic_demux_unregister_by_cb(qrx->demux, qrx_on_rx, qrx);
@@ -245,7 +223,8 @@ static void qrx_on_rx(QUIC_URXE *urxe, void *arg)
     /* Initialize our own fields inside the URXE and add to the pending list. */
     urxe->processed     = 0;
     urxe->hpr_removed   = 0;
-    ossl_quic_urxe_insert_tail(&qrx->urx_pending, urxe);
+    urxe->deferred      = 0;
+    ossl_list_urxe_insert_tail(&qrx->urx_pending, urxe);
 }
 
 int ossl_qrx_add_dst_conn_id(OSSL_QRX *qrx,
@@ -267,9 +246,9 @@ static void qrx_requeue_deferred(OSSL_QRX *qrx)
 {
     QUIC_URXE *e;
 
-    while ((e = qrx->urx_deferred.head) != NULL) {
-        ossl_quic_urxe_remove(&qrx->urx_deferred, e);
-        ossl_quic_urxe_insert_head(&qrx->urx_pending, e);
+    while ((e = ossl_list_urxe_head(&qrx->urx_deferred)) != NULL) {
+        ossl_list_urxe_remove(&qrx->urx_deferred, e);
+        ossl_list_urxe_insert_head(&qrx->urx_pending, e);
     }
 }
 
@@ -313,24 +292,25 @@ int ossl_qrx_discard_enc_level(OSSL_QRX *qrx, uint32_t enc_level)
 /* Returns 1 if there are one or more pending RXEs. */
 int ossl_qrx_processed_read_pending(OSSL_QRX *qrx)
 {
-    return qrx->rx_pending.head != NULL;
+    return !ossl_list_rxe_is_empty(&qrx->rx_pending);
 }
 
 /* Returns 1 if there are yet-unprocessed packets. */
 int ossl_qrx_unprocessed_read_pending(OSSL_QRX *qrx)
 {
-    return qrx->urx_pending.head != NULL || qrx->urx_deferred.head != NULL;
+    return !ossl_list_urxe_is_empty(&qrx->urx_pending)
+           || !ossl_list_urxe_is_empty(&qrx->urx_deferred);
 }
 
 /* Pop the next pending RXE. Returns NULL if no RXE is pending. */
 static RXE *qrx_pop_pending_rxe(OSSL_QRX *qrx)
 {
-    RXE *rxe = qrx->rx_pending.head;
+    RXE *rxe = ossl_list_rxe_head(&qrx->rx_pending);
 
     if (rxe == NULL)
         return NULL;
 
-    rxe_remove(&qrx->rx_pending, rxe);
+    ossl_list_rxe_remove(&qrx->rx_pending, rxe);
     return rxe;
 }
 
@@ -346,7 +326,7 @@ static RXE *qrx_alloc_rxe(size_t alloc_len)
     if (rxe == NULL)
         return NULL;
 
-    rxe->prev = rxe->next = NULL;
+    ossl_list_rxe_init_elem(rxe);
     rxe->alloc_len = alloc_len;
     rxe->data_len  = 0;
     return rxe;
@@ -363,14 +343,14 @@ static RXE *qrx_ensure_free_rxe(OSSL_QRX *qrx, size_t alloc_len)
 {
     RXE *rxe;
 
-    if (qrx->rx_free.head != NULL)
-        return qrx->rx_free.head;
+    if (ossl_list_rxe_head(&qrx->rx_free) != NULL)
+        return ossl_list_rxe_head(&qrx->rx_free);
 
     rxe = qrx_alloc_rxe(alloc_len);
     if (rxe == NULL)
         return NULL;
 
-    rxe_insert_tail(&qrx->rx_free, rxe);
+    ossl_list_rxe_insert_tail(&qrx->rx_free, rxe);
     return rxe;
 }
 
@@ -381,7 +361,7 @@ static RXE *qrx_ensure_free_rxe(OSSL_QRX *qrx, size_t alloc_len)
  */
 static RXE *qrx_resize_rxe(RXE_LIST *rxl, RXE *rxe, size_t n)
 {
-    RXE *rxe2;
+    RXE *rxe2, *p;
 
     /* Should never happen. */
     if (rxe == NULL)
@@ -390,25 +370,27 @@ static RXE *qrx_resize_rxe(RXE_LIST *rxl, RXE *rxe, size_t n)
     if (n >= SIZE_MAX - sizeof(RXE))
         return NULL;
 
+    /* Remove the item from the list to avoid accessing freed memory */
+    p = ossl_list_rxe_prev(rxe);
+    ossl_list_rxe_remove(rxl, rxe);
+
     /*
      * NOTE: We do not clear old memory, although it does contain decrypted
      * data.
      */
     rxe2 = OPENSSL_realloc(rxe, sizeof(RXE) + n);
-    if (rxe2 == NULL)
-        /* original RXE is still intact unchanged */
-        return NULL;
-
-    if (rxe != rxe2) {
-        if (rxl->head == rxe)
-            rxl->head = rxe2;
-        if (rxl->tail == rxe)
-            rxl->tail = rxe2;
-        if (rxe->prev != NULL)
-            rxe->prev->next = rxe2;
-        if (rxe->next != NULL)
-            rxe->next->prev = rxe2;
+    if (rxe2 == NULL || rxe == rxe2) {
+        if (p == NULL)
+            ossl_list_rxe_insert_head(rxl, rxe);
+        else
+            ossl_list_rxe_insert_after(rxl, p, rxe);
+        return rxe2;
     }
+
+    if (p == NULL)
+        ossl_list_rxe_insert_head(rxl, rxe2);
+    else
+        ossl_list_rxe_insert_after(rxl, p, rxe2);
 
     rxe2->alloc_len = n;
     return rxe2;
@@ -431,8 +413,8 @@ static RXE *qrx_reserve_rxe(RXE_LIST *rxl,
 static void qrx_recycle_rxe(OSSL_QRX *qrx, RXE *rxe)
 {
     /* RXE should not be in any list */
-    assert(rxe->prev == NULL && rxe->next == NULL);
-    rxe_insert_tail(&qrx->rx_free, rxe);
+    assert(ossl_list_rxe_prev(rxe) == NULL && ossl_list_rxe_next(rxe) == NULL);
+    ossl_list_rxe_insert_tail(&qrx->rx_free, rxe);
 }
 
 /*
@@ -765,8 +747,8 @@ static int qrx_process_pkt(OSSL_QRX *qrx, QUIC_URXE *urxe,
         rxe->pn         = QUIC_PN_INVALID;
 
         /* Move RXE to pending. */
-        rxe_remove(&qrx->rx_free, rxe);
-        rxe_insert_tail(&qrx->rx_pending, rxe);
+        ossl_list_rxe_remove(&qrx->rx_free, rxe);
+        ossl_list_rxe_insert_tail(&qrx->rx_pending, rxe);
         return 0; /* success, did not defer */
     }
 
@@ -835,13 +817,6 @@ static int qrx_process_pkt(OSSL_QRX *qrx, QUIC_URXE *urxe,
         goto malformed;
 
     /*
-     * We automatically discard INITIAL keys when successfully decrypting a
-     * HANDSHAKE packet.
-     */
-    if (enc_level == QUIC_ENC_LEVEL_HANDSHAKE)
-        ossl_qrl_enc_level_set_discard(&qrx->el_set, QUIC_ENC_LEVEL_INITIAL);
-
-    /*
      * The AAD data is the entire (unprotected) packet header including the PN.
      * The packet header has been unprotected in place, so we can just reuse the
      * PACKET buffer. The header ends where the payload begins.
@@ -877,6 +852,13 @@ static int qrx_process_pkt(OSSL_QRX *qrx, QUIC_URXE *urxe,
                               &dec_len, sop, aad_len, rxe->pn, enc_level,
                               rxe->hdr.key_phase))
         goto malformed;
+
+    /*
+     * We automatically discard INITIAL keys when successfully decrypting a
+     * HANDSHAKE packet.
+     */
+    if (enc_level == QUIC_ENC_LEVEL_HANDSHAKE)
+        ossl_qrl_enc_level_set_discard(&qrx->el_set, QUIC_ENC_LEVEL_INITIAL);
 
     /*
      * At this point, we have successfully authenticated the AEAD tag and no
@@ -924,8 +906,8 @@ static int qrx_process_pkt(OSSL_QRX *qrx, QUIC_URXE *urxe,
     rxe->time   = urxe->time;
 
     /* Move RXE to pending. */
-    rxe_remove(&qrx->rx_free, rxe);
-    rxe_insert_tail(&qrx->rx_pending, rxe);
+    ossl_list_rxe_remove(&qrx->rx_free, rxe);
+    ossl_list_rxe_insert_tail(&qrx->rx_pending, rxe);
     return 0; /* success, did not defer; not distinguished from failure */
 
 cannot_decrypt:
@@ -1025,7 +1007,7 @@ static int qrx_process_one_urxe(OSSL_QRX *qrx, QUIC_URXE *e)
     int was_deferred;
 
     /* The next URXE we process should be at the head of the pending list. */
-    if (!ossl_assert(e == qrx->urx_pending.head))
+    if (!ossl_assert(e == ossl_list_urxe_head(&qrx->urx_pending)))
         return 0;
 
     /*
@@ -1041,11 +1023,21 @@ static int qrx_process_one_urxe(OSSL_QRX *qrx, QUIC_URXE *e)
      * Remove the URXE from the pending list and return it to
      * either the free or deferred list.
      */
-    ossl_quic_urxe_remove(&qrx->urx_pending, e);
-    if (was_deferred > 0)
-        ossl_quic_urxe_insert_tail(&qrx->urx_deferred, e);
-    else
+    ossl_list_urxe_remove(&qrx->urx_pending, e);
+    if (was_deferred > 0 &&
+            (e->deferred || qrx->num_deferred < qrx->max_deferred)) {
+        ossl_list_urxe_insert_tail(&qrx->urx_deferred, e);
+        if (!e->deferred) {
+            e->deferred = 1;
+            ++qrx->num_deferred;
+        }
+    } else {
+        if (e->deferred) {
+            e->deferred = 0;
+            --qrx->num_deferred;
+        }
         ossl_quic_demux_release_urxe(qrx->demux, e);
+    }
 
     return 1;
 }
@@ -1055,7 +1047,7 @@ static int qrx_process_pending_urxl(OSSL_QRX *qrx)
 {
     QUIC_URXE *e;
 
-    while ((e = qrx->urx_pending.head) != NULL)
+    while ((e = ossl_list_urxe_head(&qrx->urx_pending)) != NULL)
         if (!qrx_process_one_urxe(qrx, e))
             return 0;
 
@@ -1078,10 +1070,11 @@ int ossl_qrx_read_pkt(OSSL_QRX *qrx, OSSL_QRX_PKT *pkt)
     if (!ossl_assert(rxe != NULL))
         return 0;
 
-    pkt->handle     = rxe;
-    pkt->hdr        = &rxe->hdr;
-    pkt->pn         = rxe->pn;
-    pkt->time       = rxe->time;
+    pkt->handle         = rxe;
+    pkt->hdr            = &rxe->hdr;
+    pkt->pn             = rxe->pn;
+    pkt->time           = rxe->time;
+    pkt->datagram_len   = rxe->datagram_len;
     pkt->peer
         = BIO_ADDR_family(&rxe->peer) != AF_UNSPEC ? &rxe->peer : NULL;
     pkt->local
@@ -1091,9 +1084,11 @@ int ossl_qrx_read_pkt(OSSL_QRX *qrx, OSSL_QRX_PKT *pkt)
 
 void ossl_qrx_release_pkt(OSSL_QRX *qrx, void *handle)
 {
-    RXE *rxe = handle;
+    if (handle != NULL) {
+        RXE *rxe = handle;
 
-    qrx_recycle_rxe(qrx, rxe);
+        qrx_recycle_rxe(qrx, rxe);
+    }
 }
 
 uint64_t ossl_qrx_get_bytes_received(OSSL_QRX *qrx, int clear)

@@ -3270,8 +3270,6 @@ static int sslcon_undefined_function_1(SSL_CONNECTION *sc, unsigned char *r,
 }
 
 const SSL3_ENC_METHOD SSLv3_enc_data = {
-    ssl3_enc,
-    n_ssl3_mac,
     ssl3_setup_key_block,
     ssl3_generate_master_secret,
     ssl3_change_cipher_state,
@@ -3466,7 +3464,7 @@ long ssl3_ctrl(SSL *s, int cmd, long larg, void *parg)
             }
             pkdh = ssl_dh_to_pkey(parg);
             if (pkdh == NULL) {
-                ERR_raise(ERR_LIB_SSL, ERR_R_MALLOC_FAILURE);
+                ERR_raise(ERR_LIB_SSL, ERR_R_DH_LIB);
                 return 0;
             }
             if (!SSL_set0_tmp_dh_pkey(s, pkdh)) {
@@ -3632,11 +3630,8 @@ long ssl3_ctrl(SSL *s, int cmd, long larg, void *parg)
                 int *cptr = parg;
 
                 for (i = 0; i < clistlen; i++) {
-                    uint16_t cid = SSL_CONNECTION_IS_TLS13(sc)
-                                   ? ssl_group_id_tls13_to_internal(clist[i])
-                                   : clist[i];
                     const TLS_GROUP_INFO *cinf
-                        = tls1_group_id_lookup(s->ctx, cid);
+                        = tls1_group_id_lookup(s->ctx, clist[i]);
 
                     if (cinf != NULL)
                         cptr[i] = tls1_group_id2nid(cinf->group_id, 1);
@@ -3814,7 +3809,7 @@ long ssl3_ctx_ctrl(SSL_CTX *ctx, int cmd, long larg, void *parg)
             }
             pkdh = ssl_dh_to_pkey(parg);
             if (pkdh == NULL) {
-                ERR_raise(ERR_LIB_SSL, ERR_R_MALLOC_FAILURE);
+                ERR_raise(ERR_LIB_SSL, ERR_R_DH_LIB);
                 return 0;
             }
             if (!SSL_CTX_set0_tmp_dh_pkey(ctx, pkdh)) {
@@ -3983,12 +3978,12 @@ long ssl3_ctx_ctrl(SSL_CTX *ctx, int cmd, long larg, void *parg)
     case SSL_CTRL_EXTRA_CHAIN_CERT:
         if (ctx->extra_certs == NULL) {
             if ((ctx->extra_certs = sk_X509_new_null()) == NULL) {
-                ERR_raise(ERR_LIB_SSL, ERR_R_MALLOC_FAILURE);
+                ERR_raise(ERR_LIB_SSL, ERR_R_CRYPTO_LIB);
                 return 0;
             }
         }
         if (!sk_X509_push(ctx->extra_certs, (X509 *)parg)) {
-            ERR_raise(ERR_LIB_SSL, ERR_R_MALLOC_FAILURE);
+            ERR_raise(ERR_LIB_SSL, ERR_R_CRYPTO_LIB);
             return 0;
         }
         break;
@@ -4448,11 +4443,11 @@ int ssl3_shutdown(SSL *s)
         ssl3_send_alert(sc, SSL3_AL_WARNING, SSL_AD_CLOSE_NOTIFY);
         /*
          * our shutdown alert has been sent now, and if it still needs to be
-         * written, s->s3.alert_dispatch will be true
+         * written, s->s3.alert_dispatch will be > 0
          */
-        if (sc->s3.alert_dispatch)
+        if (sc->s3.alert_dispatch > 0)
             return -1;        /* return WANT_WRITE */
-    } else if (sc->s3.alert_dispatch) {
+    } else if (sc->s3.alert_dispatch > 0) {
         /* resend it if not sent */
         ret = s->method->ssl_dispatch_alert(s);
         if (ret == -1) {
@@ -4474,8 +4469,8 @@ int ssl3_shutdown(SSL *s)
         }
     }
 
-    if ((sc->shutdown == (SSL_SENT_SHUTDOWN | SSL_RECEIVED_SHUTDOWN)) &&
-        !sc->s3.alert_dispatch)
+    if ((sc->shutdown == (SSL_SENT_SHUTDOWN | SSL_RECEIVED_SHUTDOWN))
+            && sc->s3.alert_dispatch == SSL_ALERT_DISPATCH_NONE)
         return 1;
     else
         return 0;
@@ -4768,7 +4763,7 @@ EVP_PKEY *ssl_generate_pkey_group(SSL_CONNECTION *s, uint16_t id)
                                       sctx->propq);
 
     if (pctx == NULL) {
-        SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_MALLOC_FAILURE);
+        SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_EVP_LIB);
         goto err;
     }
     if (EVP_PKEY_keygen_init(pctx) <= 0) {
@@ -4878,7 +4873,7 @@ int ssl_derive(SSL_CONNECTION *s, EVP_PKEY *privkey, EVP_PKEY *pubkey, int gense
 
     pms = OPENSSL_malloc(pmslen);
     if (pms == NULL) {
-        SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_MALLOC_FAILURE);
+        SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_CRYPTO_LIB);
         goto err;
     }
 
@@ -4930,7 +4925,7 @@ int ssl_decapsulate(SSL_CONNECTION *s, EVP_PKEY *privkey,
 
     pms = OPENSSL_malloc(pmslen);
     if (pms == NULL) {
-        SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_MALLOC_FAILURE);
+        SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_CRYPTO_LIB);
         goto err;
     }
 
@@ -4983,7 +4978,7 @@ int ssl_encapsulate(SSL_CONNECTION *s, EVP_PKEY *pubkey,
     pms = OPENSSL_malloc(pmslen);
     ct = OPENSSL_malloc(ctlen);
     if (pms == NULL || ct == NULL) {
-        SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_MALLOC_FAILURE);
+        SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_CRYPTO_LIB);
         goto err;
     }
 

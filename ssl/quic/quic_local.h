@@ -11,21 +11,47 @@
 # define OSSL_QUIC_LOCAL_H
 
 # include <openssl/ssl.h>
+# include "internal/quic_ssl.h"       /* QUIC_CONNECTION */
+# include "internal/quic_fc.h"
+# include "internal/quic_stream.h"
 # include "../ssl_local.h"
 
-typedef struct quic_conn_st {
-    /* type identifier and common data */
+struct quic_stream_st {
+    /* type identifier and common data for the public SSL object */
     struct ssl_st ssl;
+
+    /* QUIC_CONNECTION that this stream belongs to */
+    QUIC_CONNECTION *conn;
+    /* receive flow controller */
+    QUIC_RXFC *rxfc;
+    /* receive and send stream objects */
+    QUIC_RSTREAM *rstream;
+    QUIC_SSTREAM *sstream;
+};
+
+struct quic_conn_st {
+    /* QUIC connection is always a stream (the stream id 0) */
+    struct quic_stream_st stream;
     /* the associated tls-1.3 connection data */
     SSL *tls;
-    /* just an example member */
-    uint64_t conn_id;
-} QUIC_CONNECTION;
+
+    /* QUIC ack manager */
+    OSSL_ACKM *ackm;
+    /* QUIC receive record layer */
+    OSSL_QRX *qrx;
+};
 
 # define QUIC_CONNECTION_FROM_SSL_int(ssl, c)   \
     ((ssl) == NULL ? NULL                       \
      : ((ssl)->type == SSL_TYPE_QUIC_CONNECTION \
         ? (c QUIC_CONNECTION *)(ssl)            \
+        : NULL))
+
+# define QUIC_STREAM_FROM_SSL_int(ssl, c)       \
+    ((ssl) == NULL ? NULL                       \
+     : ((ssl)->type == SSL_TYPE_QUIC_CONNECTION \
+         || (ssl)->type == SSL_TYPE_QUIC_STREAM \
+        ? (c QUIC_STREAM *)(ssl)                \
         : NULL))
 
 # define SSL_CONNECTION_FROM_QUIC_SSL_int(ssl, c)               \
@@ -38,6 +64,10 @@ typedef struct quic_conn_st {
     QUIC_CONNECTION_FROM_SSL_int(ssl, SSL_CONNECTION_NO_CONST)
 # define QUIC_CONNECTION_FROM_CONST_SSL(ssl) \
     QUIC_CONNECTION_FROM_SSL_int(ssl, const)
+# define QUIC_STREAM_FROM_SSL(ssl) \
+    QUIC_STREAM_FROM_SSL_int(ssl, SSL_CONNECTION_NO_CONST)
+# define QUIC_STREAM_FROM_CONST_SSL(ssl) \
+    QUIC_STREAM_FROM_SSL_int(ssl, const)
 # define SSL_CONNECTION_FROM_QUIC_SSL(ssl) \
     SSL_CONNECTION_FROM_QUIC_SSL_int(ssl, SSL_CONNECTION_NO_CONST)
 # define SSL_CONNECTION_FROM_CONST_QUIC_SSL(ssl) \
@@ -85,29 +115,5 @@ const SSL_METHOD *func_name(void)  \
         }; \
         return &func_name##_data; \
         }
-
-__owur SSL *ossl_quic_new(SSL_CTX *ctx);
-__owur int ossl_quic_init(SSL *s);
-void ossl_quic_deinit(SSL *s);
-void ossl_quic_free(SSL *s);
-int ossl_quic_reset(SSL *s);
-int ossl_quic_clear(SSL *s);
-__owur int ossl_quic_accept(SSL *s);
-__owur int ossl_quic_connect(SSL *s);
-__owur int ossl_quic_read(SSL *s, void *buf, size_t len, size_t *readbytes);
-__owur int ossl_quic_peek(SSL *s, void *buf, size_t len, size_t *readbytes);
-__owur int ossl_quic_write(SSL *s, const void *buf, size_t len, size_t *written);
-__owur int ossl_quic_shutdown(SSL *s);
-__owur long ossl_quic_ctrl(SSL *s, int cmd, long larg, void *parg);
-__owur long ossl_quic_ctx_ctrl(SSL_CTX *ctx, int cmd, long larg, void *parg);
-__owur long ossl_quic_callback_ctrl(SSL *s, int cmd, void (*fp) (void));
-__owur long ossl_quic_ctx_callback_ctrl(SSL_CTX *ctx, int cmd, void (*fp) (void));
-__owur size_t ossl_quic_pending(const SSL *s);
-__owur OSSL_TIME ossl_quic_default_timeout(void);
-__owur int ossl_quic_num_ciphers(void);
-__owur const SSL_CIPHER *ossl_quic_get_cipher(unsigned int u);
-int ossl_quic_renegotiate_check(SSL *ssl, int initok);
-
-__owur int ossl_quic_depacketize(QUIC_CONNECTION *connection);
 
 #endif

@@ -21,7 +21,7 @@ SSL *ossl_quic_new(SSL_CTX *ctx)
     if (qc == NULL)
         goto err;
 
-    ssl = &qc->ssl;
+    ssl = &qc->stream.ssl;
     if (!ossl_ssl_init(ssl, ctx, SSL_TYPE_QUIC_CONNECTION)) {
         OPENSSL_free(qc);
         ssl = NULL;
@@ -55,6 +55,7 @@ void ossl_quic_free(SSL *s)
     QUIC_CONNECTION *qc = QUIC_CONNECTION_FROM_SSL(s);
 
     if (qc == NULL) {
+        /* TODO(QUIC): Temporarily needed to release the inner tls object */
         SSL_CONNECTION *sc = SSL_CONNECTION_FROM_SSL_ONLY(s);
 
         if (sc != NULL)
@@ -71,6 +72,7 @@ int ossl_quic_reset(SSL *s)
     QUIC_CONNECTION *qc = QUIC_CONNECTION_FROM_SSL(s);
 
     if (qc == NULL) {
+        /* TODO(QUIC): Temporarily needed to reset the inner tls object */
         SSL_CONNECTION *sc = SSL_CONNECTION_FROM_SSL_ONLY(s);
 
         return sc != NULL ? ossl_ssl_connection_reset(s) : 0;
@@ -238,4 +240,40 @@ const SSL_CIPHER *ossl_quic_get_cipher(unsigned int u)
 int ossl_quic_renegotiate_check(SSL *ssl, int initok)
 {
     return 1;
+}
+
+QUIC_CONNECTION *ossl_quic_conn_from_ssl(SSL *ssl)
+{
+    return QUIC_CONNECTION_FROM_SSL(ssl);
+}
+
+/*
+ * The following are getters and setters of pointers, but they don't affect
+ * the objects being pointed at.  They are CURRENTLY to be freed separately
+ * by the caller the set them in the first place.
+ */
+int ossl_quic_conn_set_qrx(QUIC_CONNECTION *qc, OSSL_QRX *qrx)
+{
+    if (qc == NULL)
+        return 0;
+    qc->qrx = qrx;
+    return 1;
+}
+
+OSSL_QRX *ossl_quic_conn_get_qrx(QUIC_CONNECTION *qc)
+{
+    return qc != NULL ? qc->qrx : NULL;
+}
+
+int ossl_quic_conn_set_ackm(QUIC_CONNECTION *qc, OSSL_ACKM *ackm)
+{
+    if (qc == NULL)
+        return 0;
+    qc->ackm = ackm;
+    return 1;
+}
+
+OSSL_ACKM *ossl_quic_conn_set_akcm(QUIC_CONNECTION *qc)
+{
+    return qc != NULL ? qc->ackm : NULL;
 }

@@ -691,34 +691,6 @@ static X509 *load_cert_pwd(const char *uri, const char *pass, const char *desc)
     return cert;
 }
 
-static X509_REQ *load_csr_autofmt(const char *infile, const char *desc)
-{
-    X509_REQ *csr;
-    BIO *bio_bak = bio_err;
-
-    bio_err = NULL; /* do not show errors on more than one try */
-    csr = load_csr(infile, FORMAT_PEM, desc);
-    bio_err = bio_bak;
-    if (csr == NULL) {
-        ERR_clear_error();
-        csr = load_csr(infile, FORMAT_ASN1, desc);
-    }
-    if (csr == NULL) {
-        ERR_print_errors(bio_err);
-        BIO_printf(bio_err, "error: unable to load %s from file '%s'\n", desc,
-                   infile);
-    } else {
-        EVP_PKEY *pkey = X509_REQ_get0_pubkey(csr);
-        int ret = do_X509_REQ_verify(csr, pkey, NULL /* vfyopts */);
-
-        if (pkey == NULL || ret < 0)
-            CMP_warn("error while verifying CSR self-signature");
-        else if (ret == 0)
-            CMP_warn("CSR self-signature does not match the contents");
-    }
-    return csr;
-}
-
 /* set expected hostname/IP addr and clears the email addr in the given ts */
 static int truststore_set_host_etc(X509_STORE *ts, const char *host)
 {
@@ -1641,7 +1613,8 @@ static int setup_request_ctx(OSSL_CMP_CTX *ctx, ENGINE *engine)
         if (opt_cmd == CMP_GENM) {
             CMP_warn("-csr option is ignored for command 'genm'");
         } else {
-            if ((csr = load_csr_autofmt(opt_csr, "PKCS#10 CSR")) == NULL)
+            csr = load_csr_autofmt(opt_csr, FORMAT_UNDEF, "PKCS#10 CSR");
+            if (csr == NULL)
                 return 0;
             if (!OSSL_CMP_CTX_set1_p10CSR(ctx, csr))
                 goto oom;
@@ -2715,7 +2688,7 @@ static int cmp_server(OSSL_CMP_CTX *srv_cmp_ctx)
                                        prog, 0, 0);
         if (ret == 0) { /* no request yet */
             if (retry) {
-                ossl_sleep(1000);
+                OSSL_sleep(1000);
                 retry = 0;
                 continue;
             }
@@ -2758,7 +2731,7 @@ static int cmp_server(OSSL_CMP_CTX *srv_cmp_ctx)
             (void)OSSL_CMP_CTX_set1_senderNonce(srv_cmp_ctx, NULL);
         }
         if (!ret || !keep_alive
-            || OSSL_CMP_CTX_get_status(srv_cmp_ctx) == -1
+            || OSSL_CMP_CTX_get_status(srv_cmp_ctx) != OSSL_CMP_PKISTATUS_trans
             /* transaction closed by OSSL_CMP_CTX_server_perform() */) {
             BIO_free_all(cbio);
             cbio = NULL;
@@ -2770,6 +2743,35 @@ static int cmp_server(OSSL_CMP_CTX *srv_cmp_ctx)
     return ret;
 }
 #endif
+
+static void print_status(void)
+{
+    /* print PKIStatusInfo */
+    int status = OSSL_CMP_CTX_get_status(cmp_ctx);
+    char *buf = app_malloc(OSSL_CMP_PKISI_BUFLEN, "PKIStatusInfo buf");
+    const char *string =
+        OSSL_CMP_CTX_snprint_PKIStatus(cmp_ctx, buf, OSSL_CMP_PKISI_BUFLEN);
+    const char *from = "", *server = "";
+
+#ifndef OPENSSL_NO_SOCK
+    if (opt_server != NULL) {
+        from = " from ";
+        server = opt_server;
+    }
+#endif
+    CMP_print(bio_err,
+              status == OSSL_CMP_PKISTATUS_accepted
+              ? OSSL_CMP_LOG_INFO :
+              status == OSSL_CMP_PKISTATUS_rejection
+              || status == OSSL_CMP_PKISTATUS_waiting
+              ? OSSL_CMP_LOG_ERR : OSSL_CMP_LOG_WARNING,
+              status == OSSL_CMP_PKISTATUS_accepted ? "info" :
+              status == OSSL_CMP_PKISTATUS_rejection ? "server error" :
+              status == OSSL_CMP_PKISTATUS_waiting ? "internal error"
+              : "warning", "received%s%s %s", from, server,
+              string != NULL ? string : "<unknown PKIStatus>");
+    OPENSSL_free(buf);
+}
 
 int cmp_main(int argc, char **argv)
 {
@@ -3009,39 +3011,10 @@ int cmp_main(int argc, char **argv)
         default:
             break;
         }
-        if (OSSL_CMP_CTX_get_status(cmp_ctx) < 0)
+        if (OSSL_CMP_CTX_get_status(cmp_ctx) < OSSL_CMP_PKISTATUS_accepted)
             goto err; /* we got no response, maybe even did not send request */
 
-        {
-            /* print PKIStatusInfo */
-            int status = OSSL_CMP_CTX_get_status(cmp_ctx);
-            char *buf = app_malloc(OSSL_CMP_PKISI_BUFLEN, "PKIStatusInfo buf");
-            const char *string =
-                OSSL_CMP_CTX_snprint_PKIStatus(cmp_ctx, buf,
-                                               OSSL_CMP_PKISI_BUFLEN);
-            const char *from = "", *server = "";
-
-#ifndef OPENSSL_NO_SOCK
-            if (opt_server != NULL) {
-                from = " from ";
-                server = opt_server;
-            }
-#endif
-            CMP_print(bio_err,
-                      status == OSSL_CMP_PKISTATUS_accepted
-                      ? OSSL_CMP_LOG_INFO :
-                      status == OSSL_CMP_PKISTATUS_rejection
-                      || status == OSSL_CMP_PKISTATUS_waiting
-                      ? OSSL_CMP_LOG_ERR : OSSL_CMP_LOG_WARNING,
-                      status == OSSL_CMP_PKISTATUS_accepted ? "info" :
-                      status == OSSL_CMP_PKISTATUS_rejection ? "server error" :
-                      status == OSSL_CMP_PKISTATUS_waiting ? "internal error"
-                                                           : "warning",
-                      "received%s%s %s", from, server,
-                      string != NULL ? string : "<unknown PKIStatus>");
-            OPENSSL_free(buf);
-        }
-
+        print_status();
         if (save_free_certs(cmp_ctx, OSSL_CMP_CTX_get1_extraCertsIn(cmp_ctx),
                             opt_extracertsout, "extra") < 0)
             ret = 0;

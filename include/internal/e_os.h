@@ -15,7 +15,7 @@
 
 # include <openssl/e_os2.h>
 # include <openssl/crypto.h>
-# include "internal/nelem.h"
+# include "internal/numbers.h"   /* Ensure the definition of SIZE_MAX */
 
 /*
  * <openssl/e_os2.h> contains what we can justify to make visible to the
@@ -249,7 +249,7 @@ FILE *__iob_func();
 /***********************************************/
 
 # if defined(OPENSSL_SYS_WINDOWS)
-#  if (_MSC_VER >= 1310) && !defined(_WIN32_WCE)
+#  if defined(_MSC_VER) && (_MSC_VER >= 1310) && !defined(_WIN32_WCE)
 #   define open _open
 #   define fdopen _fdopen
 #   define close _close
@@ -285,49 +285,6 @@ struct servent *getservbyname(const char *name, const char *proto);
 
 # endif
 /* end vxworks */
-
-/* system-specific variants defining ossl_sleep() */
-#ifdef OPENSSL_SYS_UNIX
-# include <unistd.h>
-static ossl_inline void ossl_sleep(unsigned long millis)
-{
-# ifdef OPENSSL_SYS_VXWORKS
-    struct timespec ts;
-    ts.tv_sec = (long int) (millis / 1000);
-    ts.tv_nsec = (long int) (millis % 1000) * 1000000ul;
-    nanosleep(&ts, NULL);
-# elif defined(__TANDEM)
-#  if !defined(_REENTRANT)
-#   include <cextdecs.h(PROCESS_DELAY_)>
-    /* HPNS does not support usleep for non threaded apps */
-    PROCESS_DELAY_(millis * 1000);
-#  elif defined(_SPT_MODEL_)
-#   include <spthread.h>
-#   include <spt_extensions.h>
-    usleep(millis * 1000);
-#  else
-    usleep(millis * 1000);
-#  endif
-# else
-    usleep(millis * 1000);
-# endif
-}
-#elif defined(_WIN32)
-# include <windows.h>
-static ossl_inline void ossl_sleep(unsigned long millis)
-{
-    Sleep(millis);
-}
-#else
-/* Fallback to a busy wait */
-static ossl_inline void ossl_sleep(unsigned long millis)
-{
-    const OSSL_TIME finish = ossl_time_add(ossl_time_now(), ossl_ms2time(millis));
-
-    while (ossl_time_compare(ossl_time_now(), finish) < 0)
-        /* busy wait */ ;
-}
-#endif /* defined OPENSSL_SYS_UNIX */
 
 /* ----------------------------- HP NonStop -------------------------------- */
 /* Required to support platform variant without getpid() and pid_t. */

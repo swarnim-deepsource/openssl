@@ -25,7 +25,7 @@
 # include <openssl/x509v3.h>
 # include "crypto/x509.h"
 
-#define IS_NULL_DN(name) (X509_NAME_get_entry(name, 0) == NULL)
+# define IS_NULL_DN(name) (X509_NAME_get_entry(name, 0) == NULL)
 
 /*
  * this structure is used to store the context for CMP sessions
@@ -78,7 +78,7 @@ struct ossl_cmp_ctx_st {
     X509 *cert; /* protection cert used to identify and sign for MSG_SIG_ALG */
     STACK_OF(X509) *chain; /* (cached) chain of protection cert including it */
     EVP_PKEY *pkey; /* the key pair corresponding to cert */
-    ASN1_OCTET_STRING *referenceValue; /* optional user name for MSG_MAC_ALG */
+    ASN1_OCTET_STRING *referenceValue; /* optional username for MSG_MAC_ALG */
     ASN1_OCTET_STRING *secretValue; /* password/shared secret for MSG_MAC_ALG */
     /* PBMParameters for MSG_MAC_ALG */
     size_t pbm_slen; /* salt length, currently fixed to 16 */

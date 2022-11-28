@@ -153,6 +153,10 @@ static const OSSL_ALGORITHM deflt_digests[] = {
     { PROV_NAMES_MD5_SHA1, "provider=default", ossl_md5_sha1_functions },
 #endif /* OPENSSL_NO_MD5 */
 
+#ifndef OPENSSL_NO_RMD160
+    { PROV_NAMES_RIPEMD_160, "provider=default", ossl_ripemd160_functions },
+#endif /* OPENSSL_NO_RMD160 */
+
     { PROV_NAMES_NULL, "provider=default", ossl_nullmd_functions },
     { NULL, NULL, NULL }
 };
@@ -412,6 +416,11 @@ static const OSSL_ALGORITHM deflt_asym_cipher[] = {
 
 static const OSSL_ALGORITHM deflt_asym_kem[] = {
     { PROV_NAMES_RSA, "provider=default", ossl_rsa_asym_kem_functions },
+#ifndef OPENSSL_NO_EC
+    { PROV_NAMES_X25519, "provider=default", ossl_ecx_asym_kem_functions },
+    { PROV_NAMES_X448, "provider=default", ossl_ecx_asym_kem_functions },
+    { PROV_NAMES_EC, "provider=default", ossl_ec_asym_kem_functions },
+#endif
     { NULL, NULL, NULL }
 };
 

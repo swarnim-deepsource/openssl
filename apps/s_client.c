@@ -15,6 +15,7 @@
 #include <string.h>
 #include <errno.h>
 #include <openssl/e_os2.h>
+#include "internal/nelem.h"
 
 #ifndef OPENSSL_NO_SOCK
 
@@ -3079,6 +3080,16 @@ int s_client_main(int argc, char **argv)
                 BIO_printf(bio_err, "DONE\n");
                 ret = 0;
                 goto shut;
+            }
+
+            if ((!c_ign_eof) && ((i <= 0) || (cbuf[0] == 'C' && cmdletters))) {
+                cbuf_len = 0;
+                BIO_printf(bio_c_out,
+                           "RECONNECTING\n");
+                do_ssl_shutdown(con);
+                SSL_set_connect_state(con);
+                BIO_closesocket(SSL_get_fd(con));
+                goto re_start;
             }
 
             if ((!c_ign_eof) && (cbuf[0] == 'R' && cmdletters)) {

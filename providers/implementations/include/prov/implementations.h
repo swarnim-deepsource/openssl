@@ -334,6 +334,8 @@ extern const OSSL_DISPATCH ossl_sm2_asym_cipher_functions[];
 
 /* Asym Key encapsulation  */
 extern const OSSL_DISPATCH ossl_rsa_asym_kem_functions[];
+extern const OSSL_DISPATCH ossl_ecx_asym_kem_functions[];
+extern const OSSL_DISPATCH ossl_ec_asym_kem_functions[];
 
 /* Encoders */
 extern const OSSL_DISPATCH ossl_rsa_to_PKCS1_der_encoder_functions[];
@@ -526,3 +528,4 @@ extern const OSSL_DISPATCH ossl_SubjectPublicKeyInfo_der_to_der_decoder_function
 extern const OSSL_DISPATCH ossl_pem_to_der_decoder_functions[];
 
 extern const OSSL_DISPATCH ossl_file_store_functions[];
+extern const OSSL_DISPATCH ossl_winstore_store_functions[];
